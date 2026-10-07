@@ -1,0 +1,22 @@
+# Android / Gradle generated files
+.gradle/
+**/build/
+
+# Android local configuration
+local.properties
+
+# IDE files
+.idea/
+*.iml
+
+# Temporary files
+*.tmp
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python cache
+__pycache__/
+*.pycs

@@ -1,0 +1,410 @@
+--- uploaded_final/API.cpp
++++ Firmware/Arduino/API.cpp
+@@ -5,6 +5,7 @@
+ #include "Config.h"
+ #include "API.h"
+ #include "Types.h"
++#include "calibrate.h"
+ 
+ #define MAX_TOKENS  5
+ 
+@@ -13,7 +14,7 @@
+ 
+ void APISetup()
+ {
+-    Serial.println("Listening for API commands, type 'HELP' for list of commands.");
++    Serial.println(F("Listening for API commands, type 'HELP' for list of commands."));
+     Serial.setTimeout(2000); // safer for long lines
+ }
+ 
+@@ -68,15 +69,17 @@
+ 
+     const char* cmd = tokens[0];
+ 
++    if (strcmp(cmd, "CAL") == 0) { printCalibrations(); return; }
++    if (strcmp(cmd, "VERSION") == 0) { Serial.println(F("AUTOSCAN_HOLD_1")); return; }
+     // --- HELP ---
+     if (strcmp(cmd, "HELP") == 0)
+     {
+-        Serial.println("Commands:");
+-        Serial.println("HELP");
+-        Serial.println("PING");
+-        Serial.println("STATUS [servo]");
+-        Serial.println("SEQ <string>|C");
+-        Serial.println("MOVE <delay_ms> <orientation> <moves>");
++        Serial.println(F("Commands:"));
++        Serial.println(F("HELP"));
++        Serial.println(F("PING"));
++        Serial.println(F("STATUS [servo]"));
++        Serial.println(F("SEQ <string>|C"));
++        Serial.println(F("MOVE <delay_ms> <orientation> <moves>"));
+         return;
+     }
+ 
+@@ -85,15 +88,15 @@
+     {
+         if (tokenCount != 2)
+         {
+-            Serial.println("ERR args");
++            Serial.println(F("ERR args"));
+             return;
+         }
+ 
+         int res = seqManager.startSequence(tokens[1]);
+-        if (res == 0) Serial.println("OK");
+-        else if (res == -1) Serial.println("ERR busy");
+-        else if (res == -2) Serial.println("ERR format");
+-        else Serial.println("ERR");
++        if (res == 0) Serial.println(F("OK"));
++        else if (res == -1) Serial.println(F("ERR busy"));
++        else if (res == -2) Serial.println(F("ERR format"));
++        else Serial.println(F("ERR"));
+ 
+         return;
+     }
+@@ -103,14 +106,15 @@
+     {
+         if (tokenCount != 4)
+         {
+-            Serial.println("ERR args");
++            Serial.println(F("ERR args"));
+             return;
+         }
+ 
++        if (seqManager.isBusy()) { Serial.println(F("ERR busy")); return; }
+         int delay = atoi(tokens[1]);
+         if (delay < 0)
+         {
+-            Serial.println("ERR delay");
++            Serial.println(F("ERR delay"));
+             return;
+         }
+ 
+@@ -121,15 +125,15 @@
+             seqManager.orientation = ORIENT_INVERT;
+         else
+         {
+-            Serial.println("ERR orientation");
++            Serial.println(F("ERR orientation"));
+             return;
+         }
+ 
+         int res = seqManager.startMoves(tokens[3], delay);
+-        if (res == 0) Serial.println("OK");
+-        else if (res == -1) Serial.println("ERR busy");
+-        else if (res == -2) Serial.println("ERR format");
+-        else Serial.println("ERR");
++        if (res == 0) Serial.println(F("OK"));
++        else if (res == -1) Serial.println(F("ERR busy"));
++        else if (res == -2) Serial.println(F("ERR format"));
++        else Serial.println(F("ERR"));
+ 
+         return;
+     }
+@@ -145,14 +149,14 @@
+ 
+         if (tokenCount != 2)
+         {
+-            Serial.println("ERR args");
++            Serial.println(F("ERR args"));
+             return;
+         }
+ 
+         ServoType servo;
+         if (!parseServoType(tokens[1][0], servo))
+         {
+-            Serial.println("ERR servo_type");
++            Serial.println(F("ERR servo_type"));
+             return;
+         }
+ 
+@@ -163,7 +167,7 @@
+             case STATE_C: Serial.println('C'); break;
+             case STATE_r: Serial.println('r'); break;
+             case STATE_l: Serial.println('l'); break;
+-            default: Serial.println("ERR state"); break;
++            default: Serial.println(F("ERR state")); break;
+         }
+         return;
+     }
+@@ -171,11 +175,11 @@
+     // --- PING ---
+     if (strcmp(cmd, "PING") == 0)
+     {
+-        Serial.println("PONG");
++        Serial.println(F("PONG"));
+         return;
+     }
+ 
+     // --- UNKNOWN ---
+-    Serial.print("ERR cmd: ");
++    Serial.print(F("ERR cmd: "));
+     Serial.println(cmd);
+ }
+--- uploaded_final/Arduino.ino
++++ Firmware/Arduino/Arduino.ino
+@@ -1,4 +1,4 @@
+-#include "Calibrate.h"
++#include "calibrate.h"
+ #include "MyServo.h"
+ #include "SequenceManager.h"
+ #include "API.h"
+@@ -13,12 +13,10 @@
+ }
+ 
+ void loop() {
+-    // During calibration, seqManager is never busy  
+-    if (millis() - seqManager.idleTimeMs < 3000 || seqManager.isBusy() || CALIBRATE)
+-        attachAllServos();
+-    else
+-        detachAllServos();
+-        
++    // Keep torque during the 10-second scan and manual review.
++    if (!seqManager.halted) attachAllServos();
++    else detachAllServos();
++
+ #if CALIBRATE
+     calibrateLoop();
+ #else
+@@ -26,7 +24,7 @@
+     int res = seqManager.tick();    // If ongoing sequence, keep going
+     if (res < 0)
+     {
+-        Serial.print("SEQ ERR ");
++        Serial.print(F("SEQ ERR "));
+         Serial.println(res);
+     }
+ #endif
+--- uploaded_final/MyServo.cpp
++++ Firmware/Arduino/MyServo.cpp
+@@ -2,10 +2,11 @@
+ #include <Servo.h>
+ #include "MyServo.h"
+ #include "Config.h"
+-#include "Calibrate.h"
++#include "calibrate.h"
+ 
+-#define MIN_PULSE_WIDTH 250
+-#define MAX_PULSE_WIDTH 3000
++// All eight supplied calibration records fit this stock-library-safe range.
++static const int ROBOT_MIN_PULSE = 500;
++static const int ROBOT_MAX_PULSE = 2500;
+ 
+ MyServo::MyServo(int pin, ServoType type, ServoCal calibration) :
+     pin(pin),
+@@ -54,7 +55,7 @@
+ {
+     if (!attached)
+     {
+-        thisServo.attach(pin, MIN_PULSE_WIDTH, MAX_PULSE_WIDTH);
++        thisServo.attach(pin, ROBOT_MIN_PULSE, ROBOT_MAX_PULSE);
+         thisServo.writeMicroseconds(pulse);
+         attached = true;
+     }
+--- uploaded_final/SequenceManager.cpp
++++ Firmware/Arduino/SequenceManager.cpp
+@@ -34,6 +34,10 @@
+     if (moveString[0] == 'C' && moveString[1] == '\0')
+     {
+         busy = 0;
++        halted = true;
++        detachAllServos();
++        moveBuf[0] = '\0';
++        moveIndex = sequenceIndex = 0;
+         idleTimeMs = millis();
+         activeSequence[0] = '\0';
+         notifyState();
+@@ -43,6 +47,13 @@
+     if (busy)
+         return -1;
+ 
++    if (strlen(moveString) >= sizeof(activeSequence)) return -2;
++    for (const char* c = moveString; *c;) {
++        if (isdigit(*c)) { while (isdigit(*c)) ++c; continue; }
++        ServoType t; ServoState st;
++        if (!parseServoType(*c++, t) || !*c || !parseServoState(*c++, st)) return -2;
++    }
++    halted = false;
+     strncpy(activeSequence, moveString, sizeof(activeSequence) - 1);
+     activeSequence[sizeof(activeSequence) - 1] = '\0';  // TODO: use strcpy?
+ 
+@@ -62,6 +73,11 @@
+     if (busy)
+         return -1;
+ 
++    if (delayMs < 120 || delayMs > 1000 || strlen(moveString) >= sizeof(moveBuf)) return -2;
++    for (const char* c = moveString; *c; ++c)
++        if (!strchr("URFDLBurfdlb", *c)) return -2;
++    halted = false;
++    activeSequence[0] = '\0';
+     movesDelayMs = delayMs;
+ 
+     strncpy(moveBuf, moveString, sizeof(moveBuf) - 1);
+@@ -83,7 +99,7 @@
+         return 0;
+ 
+     unsigned long now = millis();
+-    if (now < nextMoveAt)
++    if ((long)(now - nextMoveAt) < 0)
+         return 0;
+ 
+     return executeUntilDelay();
+@@ -92,9 +108,9 @@
+ void SequenceManager::notifyState()
+ {
+     if (isBusy())
+-        Serial.println("BUSY");
++        Serial.println(F("BUSY"));
+     else
+-        Serial.println("IDLE");
++        Serial.println(F("IDLE"));
+ }
+ 
+ int SequenceManager::executeUntilDelay()
+--- uploaded_final/SequenceManager.h
++++ Firmware/Arduino/SequenceManager.h
+@@ -53,6 +53,7 @@
+     int tick();
+ 
+     // Query if sequence is still running
++    bool halted = false; // Abort stays detached until a new valid movement command.
+     bool isBusy() const { return busy != 0; }
+ 
+     unsigned long idleTimeMs;  // Time since last sequence completed
+@@ -71,7 +72,7 @@
+     
+     // MOVE handling stuff
+     int movesDelayMs;   // This is for MOVE command only
+-    char seqBuf[128]; // Used by MOVE command only to build individual moves
++
+     int moveIndex = 0;
+     int handleMoves();
+     void populateActiveSequenceMove(char moveChar);
+--- uploaded_final/calibrate.cpp
++++ Firmware/Arduino/calibrate.cpp
+@@ -1,7 +1,7 @@
+ #include <Arduino.h>
+ #include <EEPROM.h>
+ #include "MyServo.h"
+-#include "Calibrate.h"
++#include "calibrate.h"
+ #include "Config.h"
+ 
+ #define EEPROM_MAGIC 0xCB02
+@@ -51,60 +51,60 @@
+ 
+ void writeCalibration(ServoType type, ServoCal cal)
+ {
+-    Serial.print("Writing calibration for servo type: ");
++    Serial.print(F("Writing calibration for servo type: "));
+     char buffer[20];
+     servoTypeToString(type, buffer, sizeof(buffer));
+     Serial.print(buffer);
+-    Serial.print("\n");
++    Serial.print(F("\n"));
+     EEPROM.put(EEPROM_CALIBRATION_START_ADDR + type * sizeof(ServoCal), cal);
+ }
+ 
+ void writeAllCalibrations()
+ {
+-    Serial.println("Writing all calibrations to EEPROM...");
++    Serial.println(F("Writing all calibrations to EEPROM..."));
+     for (int i = 0; i < NUM_SERVOS; i++)
+     {
+         ServoCal cal = servos[i].getCalibration();
+-        writeCalibration(i, cal);
+-    }
+-    Serial.println("Done writing calibrations, please set #define CALIBRATE false and re-upload the sketch.");
++        writeCalibration(static_cast<ServoType>(i), cal);
++    }
++    Serial.println(F("Done writing calibrations, please set #define CALIBRATE false and re-upload the sketch."));
+ }
+ 
+ // Print status of selected servo
+ void printStatus()
+ {
+-    Serial.print("Selected Servo: ");
++    Serial.print(F("Selected Servo: "));
+     Serial.print(selectedServo);
+-    Serial.print(" (");
++    Serial.print(F(" ("));
+     char buffer[20];
+     servoTypeToString(servos[selectedServo].getType(), buffer, sizeof(buffer));
+     Serial.print(buffer);
+-    Serial.print(")");
+-    Serial.print(" | Mode: ");
++    Serial.print(F(")"));
++    Serial.print(F(" | Mode: "));
+     ServoCal cal = servos[selectedServo].getCalibration();
+     switch (mode)
+     {
+     case STATE_C:
+-        Serial.print("CENTER");
+-        Serial.print(" | Center us: ");
++        Serial.print(F("CENTER"));
++        Serial.print(F(" | Center us: "));
+         Serial.print(cal.C_us);
+-        Serial.print(" | Deviation: ");
++        Serial.print(F(" | Deviation: "));
+         Serial.print(cal.CD_us);
+-        Serial.println(" us");
+-        Serial.print(" | Pulse: ");
++        Serial.println(F(" us"));
++        Serial.print(F(" | Pulse: "));
+         Serial.print(servos[selectedServo].pulseWidth());
+         break;
+     case STATE_L:
+-        Serial.print("LEFT");
+-        Serial.print(" | Pulse: ");
++        Serial.print(F("LEFT"));
++        Serial.print(F(" | Pulse: "));
+         Serial.print(servos[selectedServo].pulseWidth());
+-        Serial.println(" us");
++        Serial.println(F(" us"));
+         break;
+     case STATE_R:
+-        Serial.print("RIGHT");
+-        Serial.print(" | Pulse: ");
++        Serial.print(F("RIGHT"));
++        Serial.print(F(" | Pulse: "));
+         Serial.print(servos[selectedServo].pulseWidth());
+-        Serial.println(" us");
++        Serial.println(F(" us"));
+         break;
+     }
+ }
+@@ -145,16 +145,16 @@
+ 
+ void printHelp()
+ {
+-    Serial.println("Servo calibration tool commands:");
+-    Serial.println("0-7 : select servo");
+-    Serial.println("c   : set state CENTER to calibrate center");
+-    Serial.println("l   : set state LEFT to calibrate left");
+-    Serial.println("r   : set state RIGHT to calibrate right");
+-    Serial.println("+/- : increase/decrease step size");
+-    Serial.println("*// : increase/decrease step size * 10");
+-    Serial.println("</> : increase/decrease center deviation (spinners only)");
+-    Serial.println("p   : Print current calibration values");
+-    Serial.println("w   : Write calibration to EEPROM");
++    Serial.println(F("Servo calibration tool commands:"));
++    Serial.println(F("0-7 : select servo"));
++    Serial.println(F("c   : set state CENTER to calibrate center"));
++    Serial.println(F("l   : set state LEFT to calibrate left"));
++    Serial.println(F("r   : set state RIGHT to calibrate right"));
++    Serial.println(F("+/- : increase/decrease step size"));
++    Serial.println(F("*// : increase/decrease step size * 10"));
++    Serial.println(F("</> : increase/decrease center deviation (spinners only)"));
++    Serial.println(F("p   : Print current calibration values"));
++    Serial.println(F("w   : Write calibration to EEPROM"));
+     Serial.println();
+ }
+ 
+--- uploaded_final/calibrate.h
++++ Firmware/Arduino/calibrate.h
+@@ -5,3 +5,5 @@
+ 
+ void calibrateSetup();
+ void calibrateLoop();
++
++void printCalibrations();
